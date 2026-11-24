@@ -111,7 +111,7 @@ log "apt install base toolchain inside chroot..."
 run_in_rootfs "apt-get update"
 run_in_rootfs "env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   systemd systemd-sysv sudo openssh-server gcc libc6-dev make kmod ntp tzdata locales \
-  iputils-ping net-tools ifupdown python3-minimal rsync nano less ca-certificates \
+  iputils-ping net-tools ifupdown python3 rsync nano less ca-certificates \
   e2fsprogs util-linux xxd"
 
 # ----------------------- stage 3: NVIDIA L4T R35.6.5 layer -----------------------
