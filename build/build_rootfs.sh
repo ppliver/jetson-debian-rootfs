@@ -116,9 +116,10 @@ log "resolving NVIDIA deb URLs from Packages index (suite ${NV_SUITE})..."
 for comp in "${NV_COMPONENTS[@]}"; do
   curl -fsSL "${NV_REPO_BASE}/${comp}/dists/${NV_SUITE}/main/binary-arm64/Packages" \
     -o "$WORK/Packages.${comp}"
-  python3 - "$WORK/Packages.${comp}" >> "$WORK/nv_urls.txt" <<'PYEOF'
+  python3 - "$WORK/Packages.${comp}" "$comp" >> "$WORK/nv_urls.txt" <<'PYEOF'
 import sys
 blocks = open(sys.argv[1]).read().split("\n\n")
+comp = sys.argv[2]
 for b in blocks:
     pkg = ver = fn = None
     for line in b.splitlines():
@@ -126,27 +127,29 @@ for b in blocks:
         elif line.startswith("Version: "): ver = line[9:]
         elif line.startswith("Filename: "): fn = line[10:]
     if pkg and fn:
-        print(f"{pkg}\t{ver or ''}\t{fn}")
+        print(f"{comp}\t{pkg}\t{ver or ''}\t{fn}")
 PYEOF
 done
 
 log "downloading ${#NV_PACKAGES[@]} nvidia-l4t debs (version ${NV_VERSION})..."
 for pkg in "${NV_PACKAGES[@]}"; do
-  url=$(python3 - "$WORK/nv_urls.txt" "$pkg" "$NV_VERSION" <<'PYEOF'
+  row=$(python3 - "$WORK/nv_urls.txt" "$pkg" "$NV_VERSION" <<'PYEOF'
 import sys
 rows = [l.split("\t") for l in open(sys.argv[1]).read().splitlines() if "\t" in l]
 pkg, want = sys.argv[2], sys.argv[3]
-cands = [r for r in rows if r[0] == pkg]
+cands = [r for r in rows if r[1] == pkg]
 # prefer exact version, else newest available
-exact = [r for r in cands if r[1] == want]
-pick = exact[0] if exact else (max(cands, key=lambda r: r[1]) if cands else None)
+exact = [r for r in cands if r[2] == want]
+pick = exact[0] if exact else (max(cands, key=lambda r: r[2]) if cands else None)
 if pick is None:
     sys.exit(f"package not found in index: {pkg}")
-print(pick[2])
+print(pick[0] + "\t" + pick[3])
 PYEOF
 ) || die "resolve failed: $pkg"
+  comp="${row%%$'\t'*}"
+  url="${row#*$'\t'}"
   fn="$DEBS/$(basename "$url")"
-  [ -f "$fn" ] || curl -fsSL --retry 3 "${NV_REPO_BASE}/${url}" -o "$fn"
+  [ -f "$fn" ] || curl -fsSL --retry 3 "${NV_REPO_BASE}/${comp}/${url}" -o "$fn"
   log "  $(basename "$fn") ($(numfmt --to=iec $(stat -c%s "$fn")))"
   dpkg -x "$fn" "$ROOTFS"
 done
@@ -182,6 +185,7 @@ RemainAfterExit=yes
 [Install]
 WantedBy=sysinit.target
 EOF
+mkdir -p "$ROOTFS/etc/systemd/system/sysinit.target.wants"
 ln -sf ../nvgpu-autoload.service "$ROOTFS/etc/systemd/system/sysinit.target.wants/nvgpu-autoload.service"
 
 # 4.3 ld.so path for tegra libs (dpkg -x skips postinst)
@@ -229,14 +233,33 @@ sed -i 's|^pool .*pool.ntp.org.*|pool ntp.aliyun.com iburst|' "$ROOTFS/etc/ntp.c
 ln -sf /usr/share/zoneinfo/Asia/Shanghai "$ROOTFS/etc/localtime"
 echo "Asia/Shanghai" > "$ROOTFS/etc/timezone"
 
-# 4.9 fstab (root UUID set at flash time; NVMe nofail matches lab device)
+# 4.9 fstab — root entry intentionally ABSENT: the kernel mounts / via root=UUID
+#     from extlinux.conf (eMMC shared boot chain), a placeholder UUID here would
+#     drop first boot into emergency mode. Sync mode applied by remount service.
 cat > "$ROOTFS/etc/fstab" <<EOF
-# root: set root=UUID=<uuid> in /boot/extlinux/extlinux.conf (eMMC, shared boot chain)
-UUID=<ROOTFS_UUID>  /            ext4  defaults,sync,errors=remount-ro  0  1
+# NOTE: no root line — / comes from root=UUID=... in /boot/extlinux/extlinux.conf
 # lab NVMe (harmless nofail elsewhere)
 UUID=${NVME_UUID}   /mnt/nvme    ext4  defaults,nofail                  0  2
 EOF
 mkdir -p "$ROOTFS/mnt/nvme"
+
+# 4.9b root sync mode (hard-reboot data-loss protection, proven on device)
+cat > "$ROOTFS/etc/systemd/system/remount-root-sync.service" <<'EOF'
+[Unit]
+Description=Remount root ext4 with sync (data-loss protection on hard reboot)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/mount -o remount,sync /
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+ln -sf ../remount-root-sync.service \
+  "$ROOTFS/etc/systemd/system/multi-user.target.wants/remount-root-sync.service"
 
 # 4.10 users
 run_in_rootfs "echo 'root:${ROOT_PASS}' | chpasswd"
@@ -299,11 +322,17 @@ done
 
 run_in_rootfs "python3 -c 'import ctypes; print(\"ctypes ok\")'" || die "python3 broken in rootfs"
 run_in_rootfs "gcc --version | head -1"
-run_in_rootfs "ldconfig -p | grep -c libcuda"
+run_in_rootfs "ldconfig -p | grep libcuda | head -2" || true
 
 log "rootfs size: $(du -sh "$ROOTFS" | cut -f1)"
 
 # ----------------------- stage 6: pack -----------------------
+# slim down before packing
+run_in_rootfs "apt-get clean"
+rm -rf "$ROOTFS/var/lib/apt/lists/"*
+# static DNS (if-up.d/00-dns rewrites it on ethlan up anyway)
+printf "nameserver 223.5.5.5\nnameserver 8.8.8.8\n" > "$ROOTFS/etc/resolv.conf"
+
 STAMP=$(date +%Y%m%d)
 OUT="$WORK/debian11-${DEBIAN_SUITE}-xavier-${NV_VERSION}-${STAMP}.rootfs.tar.zst"
 log "packing $OUT ..."
