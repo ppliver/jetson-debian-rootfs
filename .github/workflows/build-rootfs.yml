@@ -1,0 +1,51 @@
+name: Build Debian 11 rootfs (Jetson Xavier / L4T R35.6.5)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "build/**"
+      - ".github/workflows/**"
+  schedule:
+    # monthly sanity rebuild, 1st day 03:00 UTC
+    - cron: "0 3 1 * *"
+
+jobs:
+  build-rootfs:
+    runs-on: ubuntu-24.04-arm   # free for public repos, native arm64 (no qemu)
+    timeout-minutes: 120
+    env:
+      DEBIAN_SUITE: bullseye
+      NV_SUITE: r35.6
+      NV_VERSION: 35.6.5-20260701022834
+      KERNEL_VERSION: 5.10.216-tegra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (runner has 14GB SSD)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/lib/jvm /usr/share/swift /opt/az 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          df -h / /tmp
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap zstd curl wget
+
+      - name: Build rootfs
+        run: sudo -E bash build/build_rootfs.sh
+
+      - name: Upload rootfs tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian11-xavier-rootfs
+          path: |
+            /tmp/rootfs-build/*.tar.zst
+            /tmp/rootfs-build/*.sha256
+            /tmp/rootfs-build/build_info.txt
+          retention-days: 14
+          compression-level: 0   # tarball is already zstd-compressed
