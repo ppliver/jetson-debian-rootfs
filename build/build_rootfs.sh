@@ -334,11 +334,16 @@ run_in_rootfs "ldconfig -p | grep libcuda | head -2" || true
 log "rootfs size: $(du -sh "$ROOTFS" | cut -f1)"
 
 # ----------------------- stage 6: pack -----------------------
-# slim down before packing
+# slim down before packing (chroot still mounted)
 run_in_rootfs "apt-get clean"
 rm -rf "$ROOTFS/var/lib/apt/lists/"*
 # static DNS (if-up.d/00-dns rewrites it on ethlan up anyway)
 printf "nameserver 223.5.5.5\nnameserver 8.8.8.8\n" > "$ROOTFS/etc/resolv.conf"
+
+# MUST unmount api-fs before tar — otherwise tar walks /proc/kcore (128TB
+# virtual file) and the pack step hangs forever.
+cleanup_mounts
+trap - EXIT
 
 STAMP=$(date +%Y%m%d)
 OUT="$WORK/debian11-${DEBIAN_SUITE}-xavier-${NV_VERSION}-${STAMP}.rootfs.tar.zst"
