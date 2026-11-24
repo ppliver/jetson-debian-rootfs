@@ -83,8 +83,12 @@ done
 log "using mirror: $MIRROR (suite ${DEBIAN_SUITE})"
 
 # ----------------------- stage 1: debootstrap -----------------------
-log "debootstrap ${DEBIAN_SUITE} arm64 (native)..."
-debootstrap --variant=minbase --arch=arm64 --include="ca-certificates" \
+# --no-merged-usr is REQUIRED: nvidia-l4t-* debs are built for split-usr
+# (Ubuntu 20.04). On a merged-usr rootfs, dpkg -x of the kernel deb replaces
+# the /lib -> usr/lib symlink with a real dir and kills the ELF loader path
+# (/lib/ld-linux-aarch64.so.1), i.e. every binary in the chroot goes ENOENT.
+log "debootstrap ${DEBIAN_SUITE} arm64 (native, split-usr)..."
+debootstrap --variant=minbase --arch=arm64 --no-merged-usr --include="ca-certificates" \
   "$DEBIAN_SUITE" "$ROOTFS" "$MIRROR"
 
 # api-fs for chroot
@@ -314,7 +318,10 @@ must_exist=(
   "lib/modules/${KERNEL_VERSION}/kernel/drivers/gpu/nvgpu/nvgpu.ko"
   "lib/modules/${KERNEL_VERSION}/modules.dep"
   "etc/systemd/system/nvgpu-autoload.service"
+  "lib/ld-linux-aarch64.so.1"
 )
+# fail loudly if the rootfs drifted into merged-usr (breaks deb injection)
+[ ! -L "$ROOTFS/lib" ] || die "rootfs /lib is a symlink (merged-usr) — deb injection unsafe"
 for f in "${must_exist[@]}"; do
   [ -e "$ROOTFS/$f" ] || die "missing after injection: $f"
   log "  ok: $f"
