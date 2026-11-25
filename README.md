@@ -69,3 +69,18 @@ Implemented via a patched eMMC initrd: USB rootfs mount retry extended to 30s, w
 - 中文文档：[README.zh-CN.md](README.zh-CN.md) (includes TF-card (/dev/mmcblk1) dual-boot disk prep)
 - Boot-layer (eMMC initrd) patch scripts live in [tools/](tools/): v1 fallback + v2 retry-window extension — both verified on-device 2026-11-25.
 - Note: CI builds the **rootfs content**; the dual-boot auto-select lives in the **eMMC boot layer** (patched initrd + extlinux.conf). Switching rootfs media (USB <-> TF card) only requires changing `root=UUID=...` in extlinux.conf — no initrd changes needed.
+
+## `dualboot` — boot-target switcher (installed on both systems)
+
+Deployed to `/usr/local/bin/dualboot` on **both** the USB/TF Debian and the eMMC Ubuntu. Run with sudo:
+
+```
+dualboot status          # running OS / menu labels / next-boot target
+dualboot poweroff        # shutdown
+dualboot reboot          # reboot (current DEFAULT)
+dualboot switch debian   # next boot -> USB Debian (reboots after 3s)
+dualboot switch ubuntu   # next boot -> eMMC Ubuntu  (reboots after 3s)
+dualboot switch <label> [--noreboot]   # primary / backup / recovery
+```
+
+It only rewrites `DEFAULT` in the canonical extlinux.conf (auto-locates it: `/boot` when running eMMC Ubuntu, or mounts the eMMC APP partition when running Debian) — initrd patches and fallback logic stay untouched.

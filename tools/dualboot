@@ -1,0 +1,111 @@
+#!/bin/bash
+# dualboot — Jetson Xavier 双系统切换工具 (USB Debian <-> eMMC Ubuntu)
+#
+# 用法（均需 root，建议 sudo 调用）:
+#   dualboot status                    查看当前系统/菜单/下次启动目标
+#   dualboot poweroff                  关机
+#   dualboot reboot                    重启（按当前 DEFAULT）
+#   dualboot switch debian  [--noreboot]  下次启动进 USB Debian（默认改完即重启）
+#   dualboot switch ubuntu  [--noreboot]  下次启动进 eMMC Ubuntu
+#   dualboot switch <label> [--noreboot]  直接指定菜单 label（primary/backup/recovery）
+#
+# 原理: L4TLauncher 启动时读取 eMMC APP 分区 /boot/extlinux/extlinux.conf 的 DEFAULT 项。
+# 本脚本只改 DEFAULT，不动 initrd/内核/rootfs；引导层补丁（30s 重试+回退）保持生效。
+set -eu
+
+CONF_LABELS="primary backup debian recovery"
+
+# ---------- locate the canonical extlinux.conf ----------
+# On eMMC Ubuntu, root IS mmcblk0p1 -> /boot is canonical.
+# On USB/TF Debian, canonical conf lives on the unmounted eMMC APP partition.
+# Sets globals: CONF, EMOUNTED(0/1), EMNT. (No command substitution: we need the globals.)
+find_conf() {
+    local rootsrc
+    rootsrc="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    if [ "$rootsrc" = "/dev/mmcblk0p1" ]; then
+        EMOUNTED=1
+        EMNT=""
+        CONF="/boot/extlinux/extlinux.conf"
+        return
+    fi
+    EMOUNTED=0
+    EMNT=/mnt/.dualboot-emmc
+    mkdir -p "$EMNT"
+    if ! mountpoint -q "$EMNT"; then
+        mount /dev/mmcblk0p1 "$EMNT" || { echo "FATAL: mount /dev/mmcblk0p1 failed" >&2; exit 1; }
+    fi
+    [ -f "$EMNT/boot/extlinux/extlinux.conf" ] || { echo "FATAL: extlinux.conf not found on eMMC APP" >&2; exit 1; }
+    CONF="$EMNT/boot/extlinux/extlinux.conf"
+}
+
+find_conf
+cleanup() { if [ "$EMOUNTED" = "0" ] && mountpoint -q "${EMNT:-/nonexistent}"; then umount "$EMNT" || umount -l "$EMNT" || true; fi; }
+trap cleanup EXIT
+
+get_default() { sed -n 's/^DEFAULT[[:space:]]\+//p' "$CONF" | head -1; }
+set_default() { sed -i "s/^DEFAULT[[:space:]]\+.\+/DEFAULT $1/" "$CONF"; sync; }
+
+current_os() {
+    local rootsrc
+    rootsrc="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    if [ "$rootsrc" = "/dev/mmcblk0p1" ]; then echo "ubuntu(eMMC)"; else echo "debian(USB/TF)"; fi
+}
+
+do_poweroff() {
+    sync
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+        systemctl poweroff --no-wall 2>/dev/null || poweroff -f 2>/dev/null || true
+    fi
+    sleep 3
+    echo b > /proc/sysrq-trigger 2>/dev/null || true   # minimal-rootfs fallback
+}
+
+do_reboot() {
+    sync
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+        systemctl reboot --no-wall 2>/dev/null || reboot -f 2>/dev/null || true
+    fi
+    sleep 3
+    echo b > /proc/sysrq-trigger 2>/dev/null || true
+}
+
+show_status() {
+    echo "current OS : $(current_os)"
+    echo "conf       : $CONF"
+    echo "next boot  : $(get_default)"
+    echo "menu labels: $(sed -n 's/^LABEL[[:space:]]\+//p' "$CONF" | tr '\n' ' ')"
+    sed -n 's/^\s*MENU LABEL[[:space:]]\+//p' "$CONF" | sed 's/^/             /'
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+    status)  show_status ;;
+    poweroff) do_poweroff ;;
+    reboot)  do_reboot ;;
+    switch)
+        target="${2:-}"
+        [ -n "$target" ] || { echo "usage: dualboot switch <debian|ubuntu|label> [--noreboot]" >&2; exit 2; }
+        case "$target" in
+            ubuntu)  label=primary ;;
+            debian)  label=debian ;;
+            *)       label="$target" ;;
+        esac
+        if ! grep -qE "^LABEL[[:space:]]+$label\$" "$CONF"; then
+            echo "FATAL: label '$label' not in $CONF (have: $CONF_LABELS)" >&2
+            exit 2
+        fi
+        cur="$(current_os)"
+        set_default "$label"
+        echo "current OS : $cur"
+        echo "next boot  : $label  (DEFAULT updated in extlinux.conf)"
+        if [ "${3:-}" != "--noreboot" ]; then
+            echo "rebooting in 3s (Ctrl+C to abort)..."
+            sleep 3
+            do_reboot
+        fi
+        ;;
+    *)
+        grep '^#' "$0" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

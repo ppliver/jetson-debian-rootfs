@@ -110,3 +110,18 @@ sudo bash tools/dualboot_initrd_v2_retry30s.sh    # 挂载重试 10s→30s
   dmpstore -d -guid 781E084C-A330-417C-B678-38E696380CB9 RootfsStatusSlotB
   reset
   ```
+
+## `dualboot` —— 双系统切换命令（两套系统均已安装）
+
+已部署到 U盘 Debian 与 eMMC Ubuntu 的 `/usr/local/bin/dualboot`，用 sudo 调用：
+
+```
+dualboot status                # 当前系统 / 菜单项 / 下次启动目标
+dualboot poweroff              # 关机
+dualboot reboot                # 重启（按当前 DEFAULT）
+dualboot switch debian         # 下次启动进 USB Debian（3 秒后自动重启）
+dualboot switch ubuntu         # 下次启动进 eMMC Ubuntu
+dualboot switch <label> [--noreboot]   # primary / backup / recovery，--noreboot 只改不重启
+```
+
+原理：只改规范 extlinux.conf 的 `DEFAULT`（自动定位——Ubuntu 下直接改自己的 /boot；Debian 下临时挂载 eMMC APP 分区改完即卸），initrd 补丁与回退逻辑完全不动。
