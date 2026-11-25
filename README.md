@@ -51,3 +51,15 @@ Boot menu (eMMC extlinux.conf): `DEFAULT debian` boots USB rootfs; select `prima
 - Hard reboot loses un-synced ext4 writes → root is mounted `sync`.
 - Xavier has no RTC battery → fake clock at boot; NTP (aliyun pool) + Asia/Shanghai preinstalled.
 - CUDA works even though `/dev/nvhost-gpu` may not appear in `ls /dev` — don't use node presence as a failure signal; check `cuInit` instead.
+
+## Dual-boot auto-select (USB Debian / eMMC Ubuntu fallback)
+
+Implemented via a patched eMMC initrd: USB rootfs mount retry extended to 30s, with automatic fallback to `/dev/mmcblk0p1` when the USB drive is absent. Factory initrd preserved as `initrd.orig` (used by primary/backup/recovery menu entries).
+
+- Docs: [docs/dualboot-incident-20261125.md](docs/dualboot-incident-20261125.md) — full incident post-mortem: the A/B rootfs retry-counter lockout that forces "Attempting Recovery Boot" (no menu shown), the UEFI Shell rescue via `dmpstore -d RootfsStatusSlotA/B`, and the verified acceptance matrix.
+- Quick rescue if boot enters Recovery Boot with no menu (UEFI Shell):
+  ```
+  dmpstore -d -guid 781E084C-A330-417C-B678-38E696380CB9 RootfsStatusSlotA
+  dmpstore -d -guid 781E084C-A330-417C-B678-38E696380CB9 RootfsStatusSlotB
+  reset
+  ```
