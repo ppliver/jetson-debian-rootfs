@@ -63,3 +63,9 @@ Implemented via a patched eMMC initrd: USB rootfs mount retry extended to 30s, w
   dmpstore -d -guid 781E084C-A330-417C-B678-38E696380CB9 RootfsStatusSlotB
   reset
   ```
+
+## Chinese version & dual-boot tooling
+
+- 中文文档：[README.zh-CN.md](README.zh-CN.md) (includes TF-card (/dev/mmcblk1) dual-boot disk prep)
+- Boot-layer (eMMC initrd) patch scripts live in [tools/](tools/): v1 fallback + v2 retry-window extension — both verified on-device 2026-11-25.
+- Note: CI builds the **rootfs content**; the dual-boot auto-select lives in the **eMMC boot layer** (patched initrd + extlinux.conf). Switching rootfs media (USB <-> TF card) only requires changing `root=UUID=...` in extlinux.conf — no initrd changes needed.
