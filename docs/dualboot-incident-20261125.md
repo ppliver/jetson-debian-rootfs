@@ -151,7 +151,29 @@ sudo od -A x -t x1 /sys/firmware/efi/efivars/RootfsStatusSlotA-781e084c-a330-417
 
 | 文件 | 位置 |
 |---|---|
-| initrd 补丁脚本 v1（回退） | 本地 `D:\projects\nvidia\.initrd_fallback.sh` |
-| initrd 补丁脚本 v2（重试扩容） | 本地 `D:\projects\nvidia\.initrd_v2.sh` |
+| initrd 补丁脚本 v1（回退） | 仓库 [`tools/dualboot_initrd_v1_fallback.sh`](../tools/dualboot_initrd_v1_fallback.sh) |
+| initrd 补丁脚本 v2（重试扩容） | 仓库 [`tools/dualboot_initrd_v2_retry30s.sh`](../tools/dualboot_initrd_v2_retry30s.sh) |
 | 补丁后 init / extlinux.conf | 设备 eMMC `/boot/`（`initrd.orig` = 工厂副本） |
 | L4TLauncher 源码（模式决策/Rootfs 校验） | github.com/NVIDIA/edk2-nvidia `Silicon/NVIDIA/Application/L4TLauncher/` |
+
+## 8. 事故后的工具化成果：`dualboot` 切换命令
+
+事故处理过程中验证的所有机制，最终收敛为一个日常运维工具 [`tools/dualboot`](../tools/dualboot)，部署在**两套系统**（USB Debian + eMMC Ubuntu）的 `/usr/local/bin/dualboot`：
+
+```
+sudo dualboot status          # 当前系统 / 菜单项 / 下次启动目标
+sudo dualboot poweroff        # 关机
+sudo dualboot reboot          # 重启（按当前 DEFAULT）
+sudo dualboot switch debian   # 下次启动进 USB Debian（3 秒后自动重启）
+sudo dualboot switch ubuntu   # 下次启动进 eMMC Ubuntu
+sudo dualboot switch <label> [--noreboot]   # primary / backup / recovery
+```
+
+设计要点：
+
+- **只改规范 extlinux.conf 的 `DEFAULT` 行**——initrd 补丁与拔盘回退逻辑完全不动，A/B 状态变量不受影响（不会重演 §3 根因 2 的锁定）
+- 自动定位配置：eMMC Ubuntu 下直接改自己的 `/boot`（root 即 mmcblk0p1）；Debian 下临时挂载 eMMC APP 分区（`/mnt/.dualboot-emmc`）改完即卸
+- 关机/重启走 `systemctl --no-wall`，精简 rootfs 缺 reboot 二进制时兜底 sysrq
+- 校验：非法 label 拒绝（exit 2）、无 sudo 报 mount 错误、切换往返后 DEFAULT 正确落盘
+
+已实测（2026-11-25）：Debian 侧 status/switch 往返/错误处理全通过；Ubuntu 侧为同代码路径，待首次切换时顺手确认。
